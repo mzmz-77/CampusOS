@@ -1,0 +1,8 @@
+// @vitest-environment node
+import {test,expect} from 'vitest';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const publicFile=name=>readFileSync(new URL(`../public/${name}`,import.meta.url),'utf8');
+test('PWA manifest has valid local PNG icons',()=>{const manifest=JSON.parse(publicFile('manifest.webmanifest'));expect(manifest.display).toBe('standalone');for(const icon of manifest.icons){const png=readFileSync(new URL(`../public${icon.src}`,import.meta.url));expect(png.subarray(1,4).toString()).toBe('PNG');const size=Number(icon.sizes.split('x')[0]);expect(png.readUInt32BE(16)).toBe(size);expect(png.readUInt32BE(20)).toBe(size);}});
+test('service worker never intercepts API, external requests or writes',()=>{const handlers={};vm.runInNewContext(publicFile('sw.js'),{URL,self:{location:{origin:'http://localhost'},addEventListener:(name,fn)=>handlers[name]=fn}});for(const [url,method] of [['http://localhost/api/messages','GET'],['http://localhost/api/tasks','POST'],['https://example.org/a','GET']]){let handled=false;handlers.fetch({request:{url,method},respondWith:()=>{handled=true;}});expect(handled).toBe(false);}});
+test('offline navigation uses cached static shell',async()=>{const handlers={};let result;vm.runInNewContext(publicFile('sw.js'),{URL,fetch:()=>Promise.reject(new Error('offline')),caches:{match:async path=>({shell:path})},self:{location:{origin:'http://localhost'},addEventListener:(name,fn)=>handlers[name]=fn}});handlers.fetch({request:{url:'http://localhost/',method:'GET',mode:'navigate'},respondWith:promise=>{result=promise;}});expect(await result).toEqual({shell:'/'});});

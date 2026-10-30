@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.db
+*.db-*
+.env
+node_modules/
+dist/
+work/
+*.tsbuildinfo
+
+# Local credentials and environment files
+.env.*
+.dev.vars*
+*.pem
+*.key

@@ -1,0 +1,6 @@
+import {afterEach,test,expect,vi} from 'vitest';
+import {api,all,date,overdue} from './api';
+afterEach(()=>{vi.unstubAllGlobals();sessionStorage.clear();});
+test('sends session token and preserves server errors',async()=>{sessionStorage.setItem('campusos-token','test-token');const fetchMock=vi.fn(async()=>({ok:false,status:409,json:async()=>({detail:'来源编号冲突'})}));vi.stubGlobal('fetch',fetchMock);await expect(api('/messages',{method:'POST'})).rejects.toThrow('来源编号冲突');expect(fetchMock.mock.calls[0]).toEqual(['/api/messages',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer test-token'}}]);});
+test('loads all pages without truncating at 500 records',async()=>{const f=vi.fn().mockResolvedValueOnce({ok:true,json:async()=>Array.from({length:500},(_,i)=>i)}).mockResolvedValueOnce({ok:true,json:async()=>[500]});vi.stubGlobal('fetch',f);expect(await all('/messages')).toHaveLength(501);expect(f.mock.calls[1][0]).toBe('/api/messages?limit=500&offset=500');});
+test('formats SQLite UTC timestamps as Shanghai time',()=>{expect(date('2026-10-30T12:00:00',true)).toContain('20:00');expect(overdue({id:1,title:'x',notes:'',status:'done',priority:'normal',notification_id:null,deadline:'2020-01-01T00:00:00'})).toBe(false);});
