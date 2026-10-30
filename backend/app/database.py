@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, event, String, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import create_engine, event, String, Text, DateTime, ForeignKey, UniqueConstraint, Boolean, CheckConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
@@ -26,6 +26,8 @@ class Message(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     source: Mapped[str] = mapped_column(String(100))
     external_id: Mapped[str | None] = mapped_column(String(200))
+    source_id: Mapped[int | None] = mapped_column(ForeignKey('sources.id'))
+    authorization_snapshot: Mapped[str | None] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
     source_url: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -41,7 +43,6 @@ def make_engine(url):
     if url.startswith('sqlite'):
         @event.listens_for(engine, 'connect')
         def enable_fk(connection, _): connection.execute('PRAGMA foreign_keys=ON')
-    Base.metadata.create_all(engine)
     return engine
 
 class Notification(Base):
@@ -73,3 +74,36 @@ class Task(Base):
     notification_id: Mapped[int | None] = mapped_column(ForeignKey('notifications.id'), unique=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+
+
+class Source(Base):
+    __tablename__ = 'sources'
+    __table_args__ = (
+        CheckConstraint("access_method IN ('unconfigured','manual_import','public_web')", name='ck_source_method'),
+        CheckConstraint("authorization_status IN ('not_requested','pending','granted','revoked')", name='ck_source_auth'),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
+    public_website: Mapped[bool] = mapped_column(Boolean)
+    access_method: Mapped[str] = mapped_column(String(30), default='unconfigured')
+    authorization_status: Mapped[str] = mapped_column(String(30), default='not_requested')
+    authorization_scope: Mapped[str] = mapped_column(Text, default='')
+    authorization_reference: Mapped[str] = mapped_column(Text, default='')
+    authorization_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)
+    __mapper_args__ = {'version_id_col': revision}
+
+
+class SourceEvent(Base):
+    __tablename__ = 'source_events'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey('sources.id'), index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    reason: Mapped[str] = mapped_column(Text)
+    before_json: Mapped[str | None] = mapped_column(Text)
+    after_json: Mapped[str] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=now)

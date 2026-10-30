@@ -1,4 +1,5 @@
-export interface RawMessage { id:number; source:string; external_id:string|null; content:string; source_url:string|null; published_at:string|null; received_at:string }
+import type {AuthorizationSnapshot} from './source-types';
+export interface RawMessage { source_id?:number|null; authorization_snapshot?:AuthorizationSnapshot|null; id:number; source:string; external_id:string|null; content:string; source_url:string|null; published_at:string|null; received_at:string }
 export interface Notice { id:number; title:string; summary:string; category:string; priority:'normal'|'high'; deadline:string|null; warnings:string; parser_version:string; created_at:string }
 export interface Task { id:number; title:string; notes:string; status:'todo'|'doing'|'done'; priority:'normal'|'high'; deadline:string|null; notification_id:number|null }
 export interface Detail extends Notice { sources:RawMessage[]; task:Task|null }

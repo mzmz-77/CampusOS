@@ -1,4 +1,4 @@
-.PHONY: setup dev test build
+.PHONY: setup dev test build migrate migrate-check
 setup:
 	python3 -m venv .venv
 	.venv/bin/python -m pip install --cache-dir work/pip-cache -r backend/requirements.txt
@@ -10,3 +10,8 @@ test:
 	cd frontend && npm test
 build:
 	cd frontend && npm run build
+
+migrate:
+	cd backend && ../.venv/bin/python -m app.migrate
+migrate-check:
+	cd backend && ../.venv/bin/python -m app.migrate --check

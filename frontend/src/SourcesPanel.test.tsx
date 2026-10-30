@@ -1,0 +1,10 @@
+import {afterEach,test,expect,vi} from 'vitest';
+import {render,screen,within,cleanup} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import {SourcesPanel} from './SourcesPanel';
+import {dispatch,initialState} from './preview';
+import type {Source} from './source-types';
+afterEach(()=>{cleanup();vi.unstubAllGlobals();});
+function sources(){return dispatch(initialState(),'/api/sources','GET').body as Source[];}
+test('renders all target sources with unsafe enable controls disabled',()=>{render(<SourcesPanel sources={sources()} loading={false} refresh={vi.fn()}/>);expect(screen.getByText('学在西电')).toBeVisible();expect(screen.getByText('XDYou')).toBeVisible();for(const button of screen.getAllByRole('button',{name:/启用手工接入/}))expect(button).toBeDisabled();});
+test('records explicit grant with scope, evidence and operator confirmation',async()=>{const fetch=vi.fn(async()=>({ok:true,json:async()=>({})}));vi.stubGlobal('fetch',fetch);render(<SourcesPanel sources={sources()} loading={false} refresh={vi.fn(async()=>{})}/>);const user=userEvent.setup();await user.click(screen.getByRole('button',{name:'管理授权 西电学校官网'}));const dialog=screen.getByRole('dialog');await user.selectOptions(within(dialog).getByLabelText('接入方式'),'manual_import');await user.selectOptions(within(dialog).getByLabelText('授权状态'),'granted');await user.type(within(dialog).getByLabelText('授权范围 *'),'仅合成测试通知');await user.type(within(dialog).getByLabelText('授权依据 *'),'test-only');await user.type(within(dialog).getByLabelText('变更原因 *'),'test fixture');await user.click(within(dialog).getByRole('checkbox'));await user.click(within(dialog).getByRole('button',{name:'保存来源设置'}));expect(await screen.findByText('来源设置已保存，授权与启用状态分别管理。')).toBeVisible();const body=JSON.parse((fetch.mock.calls as unknown as [string,RequestInit][])[0][1].body as string);expect(body).toMatchObject({authorization_confirmed:true,authorization_status:'granted',authorization_reference:'test-only',expected_revision:1});expect(body.enabled).toBeUndefined();});

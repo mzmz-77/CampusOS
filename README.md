@@ -4,6 +4,8 @@
 
 第一阶段已实现：前后端项目结构、消息接入 API、原文持久化、通知解析、任务管理、来源追溯、重复通知合并、可视化管理界面和 PWA 应用壳。
 
+初始化验收后已加入八类来源注册、授权状态、手工接入开关、授权变更记录及录入时授权快照。所有目标来源初始均未授权、禁用，自动采集尚未实现。
+
 ## 环境与启动
 
 需要 Python 3.12+、Node.js 22.12+ / 24+、npm。所有依赖安装在本项目内，不需要全局依赖。
@@ -14,7 +16,7 @@ make setup
 make dev
 ```
 
-当前开发环境已经安装依赖，直接运行 `make dev` 即可。
+首次使用空数据库时会在启动时执行初始化迁移。更新已有项目后，先运行 `make setup` 更新项目内依赖，再运行 `make migrate` 升级数据库，最后 `make dev`。
 
 - 工作台：http://127.0.0.1:5173
 - API 文档：http://127.0.0.1:8000/docs
@@ -83,7 +85,14 @@ cd backend
 DATABASE_URL='postgresql+psycopg://user:password@localhost/campusos' ../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-该设置只作用于这条命令，不写全局变量。启动时在空数据库创建表，**不会自动迁移已有数据库或复制 SQLite 数据**。第一阶段实际测试在 SQLite 上完成；PostgreSQL 尚未进行实库验证。后续变更表结构前应加入 Alembic 迁移。
+该设置只作用于这条命令，不写全局变量。空数据库启动时通过 Alembic 初始化，已有数据库必须先执行迁移，**不会复制 SQLite 数据**：
+
+```bash
+cd backend
+DATABASE_URL='postgresql+psycopg://user:password@localhost/campusos' ../.venv/bin/python -m app.migrate
+```
+
+本地回归使用 SQLite。CI 工作流提供独立 PostgreSQL 16 测试服务，配置 `CAMPUSOS_TEST_POSTGRES_URL` 后才运行实库测试；测试在专用 `*_test` 数据库中创建临时 schema 并清理，不能配置业务数据库。
 
 ## 访问范围
 
@@ -102,7 +111,7 @@ scripts/dev.py        项目内一键启动
 docs/                API 说明、测试与实施记录
 ```
 
-详见 `docs/API.md`、`docs/PROGRESS.md`、`docs/TEST_REPORT.md`。
+详见 `docs/API.md`、`docs/PROGRESS.md`、`docs/TEST_REPORT.md`、`docs/INITIALIZATION_ACCEPTANCE.md` 和 `docs/PHASE3_SOURCES.md`。
 
 ## 托管交互体验
 
@@ -120,3 +129,29 @@ npm run build:experience
 普通 `npm run build`、`npm run dev` 仍访问真实 FastAPI；体验数据层仅在 `hosted-preview` 构建模式启用。服务端 API 不由托管体验版提供。
 
 `.openai/hosting.json` 记录该体验站点的身份及静态构建目录。发布源码在独立的 Sites Git 仓库中同步，不修改原项目 Git 远端配置。
+
+
+## 来源与授权管理
+
+在“消息接入 → 目标来源与授权”管理学校官网、计算机科学与技术学院官网、学校公众号、学校企业号、QQ 群、微信群、学在西电、XDYou 八类来源。
+
+1. 初始均为“未申请”且禁用，不登记校园账号或猜测 API。
+2. 取得真实授权后，填写授权范围、依据、有效期及变更原因，并主动确认后登记授权。程序只记录操作者声明，不代替平台核验。
+3. 选择“手工录入”，再单独启用。当前公开网页采集尚未实现，不能启用自动采集。
+4. 在录入框关联已启用来源，后端再次检查授权状态、有效期和接入方式；授权撤销 / 到期后拒绝该来源的新消息。
+5. 原始消息保存录入时授权快照，通知详情可查看；变更记录只增不改。没有关联来源的旧消息保持原样，普通手工标签不代表来源已验证。
+
+## 数据库迁移
+
+```bash
+make migrate        # SQLite 文件升级前自动备份并校验备份
+make migrate-check  # 检查是否达到当前迁移版本
+```
+
+当前版本为 `0002_sources`，迁移脚本位于 `backend/migrations/versions/`。升级初期未版本化数据库前，会校验原四张表的列、类型、主键、唯一约束及外键；不匹配就停止。SQLite 备份保存在被 Git 忽略的 `work/backups/`。PostgreSQL 变更前由部署者准备数据库备份；本命令不代做 PostgreSQL 备份。
+
+已有数据库不会在 Web 请求或应用启动时自动升级。降级删除数据的操作已禁用；如需回退，停止服务后使用经过验证的数据库备份及匹配的代码版本。
+
+## 持续集成
+
+`.github/workflows/checks.yml` 在 push / pull request 时安装项目内依赖、执行 SQLite 与独立 PostgreSQL 回归、前端测试及两种构建。CI 中的数据库凭据仅用于一次性测试服务，与学校账号无关。本地没有设置 `CAMPUSOS_TEST_POSTGRES_URL` 时，实库测试明确跳过。

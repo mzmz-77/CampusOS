@@ -6,7 +6,8 @@ import type {RawMessage,Notice,Task} from './api';
 let messages:RawMessage[],notices:Notice[],tasks:Task[];
 beforeEach(()=>{messages=[];notices=[];tasks=[];sessionStorage.clear();vi.stubGlobal('fetch',vi.fn(async(input:string,options:RequestInit={})=>{
  const url=new URL(input,'http://localhost');const path=url.pathname;const method=options.method||'GET';const payload=options.body?JSON.parse(String(options.body)):{};let data:unknown=[];
- if(path==='/api/messages'&&method==='GET')data=messages;
+ if(path==='/api/sources'&&method==='GET')data=[];
+ else if(path==='/api/messages'&&method==='GET')data=messages;
  else if(path==='/api/notifications'&&method==='GET')data=notices;
  else if(path==='/api/tasks'&&method==='GET')data=tasks;
  else if(path==='/api/messages'&&method==='POST'){const r:RawMessage={id:1,source_url:null,external_id:null,published_at:null,received_at:'2026-10-30T12:00:00Z',...payload};messages.push(r);data=r;}

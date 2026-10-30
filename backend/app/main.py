@@ -1,25 +1,42 @@
 import os
+import json
+from contextlib import asynccontextmanager
 import secrets
-from pathlib import Path
 from datetime import timezone
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .database import make_engine, Message, Notification, Origin, Task, now
-from .schemas import MessageIn, TaskIn, TaskPatch
+from sqlalchemy.orm.exc import StaleDataError
+from .database import make_engine, Message, Notification, Origin, Task, Source, SourceEvent, now
+from .schemas import MessageIn, TaskIn, TaskPatch, SourcePatch
 from .parser import parse
 from .dedup import fingerprint
+from .migrate import database_url as configured_database_url, ensure_database
+from .sources import seed_catalog, source_view, source_state, encoded, apply_source_patch, registered_message_source
 
 
-def record(obj): return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+def record(obj):
+    result = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+    if isinstance(obj, Message) and obj.authorization_snapshot:
+        result['authorization_snapshot'] = json.loads(obj.authorization_snapshot)
+    return result
 
 
 def create_app(database_url: str | None = None):
-    default_db = Path(__file__).resolve().parents[1] / 'campusos.db'
-    engine = make_engine(database_url or os.getenv('DATABASE_URL', f'sqlite:///{default_db}'))
-    app = FastAPI(title='CampusOS-XDU', version='0.1.0')
+    engine = make_engine(database_url or configured_database_url())
+
+    @asynccontextmanager
+    async def lifespan(app):
+        ensure_database(engine)
+        seed_catalog(engine)
+        try:
+            yield
+        finally:
+            engine.dispose()
+
+    app = FastAPI(title='CampusOS-XDU', version='0.2.0', lifespan=lifespan)
     app.state.engine = engine
     bearer = HTTPBearer(auto_error=False)
     token = os.getenv('CAMPUSOS_API_TOKEN')
@@ -36,6 +53,8 @@ def create_app(database_url: str | None = None):
     def ingest(payload: MessageIn, session: Session = Depends(db)):
         values = payload.model_dump(mode='json')
         values['published_at'] = payload.published_at.astimezone(timezone.utc) if payload.published_at else None
+        if payload.source_id is not None:
+            _, values['authorization_snapshot'] = registered_message_source(session, payload.source_id)
         message = Message(**values)
         session.add(message)
         try: session.commit()
@@ -45,7 +64,7 @@ def create_app(database_url: str | None = None):
             if existing is None: raise HTTPException(409, '消息保存冲突，请重试')
             old_time = existing.published_at
             if old_time is not None and old_time.tzinfo is None: old_time = old_time.replace(tzinfo=timezone.utc)
-            if any(getattr(existing,k) != values[k] for k in ('source','external_id','content','source_url')) or old_time != payload.published_at:
+            if any(getattr(existing,k) != values[k] for k in ('source','external_id','content','source_url','source_id')) or old_time != payload.published_at:
                 raise HTTPException(409, '相同来源编号的原文或元数据冲突')
             return record(existing)
         session.refresh(message)
@@ -133,6 +152,41 @@ def create_app(database_url: str | None = None):
         task = session.get(Task, task_id)
         if task is None: raise HTTPException(404, '任务不存在')
         return {'task':record(task), 'notification':notification_detail(task.notification_id, session) if task.notification_id else None}
+
+    @app.get('/api/sources', dependencies=[Depends(authorize)])
+    def sources(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), session: Session = Depends(db)):
+        return [source_view(source) for source in session.scalars(select(Source).order_by(Source.id).offset(offset).limit(limit))]
+
+    @app.get('/api/sources/{source_id}', dependencies=[Depends(authorize)])
+    def source_detail(source_id: int, session: Session = Depends(db)):
+        source = session.get(Source, source_id)
+        if source is None: raise HTTPException(404, '登记来源不存在。')
+        return source_view(source)
+
+    @app.get('/api/sources/{source_id}/events', dependencies=[Depends(authorize)])
+    def source_events(source_id: int, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), session: Session = Depends(db)):
+        if session.get(Source, source_id) is None: raise HTTPException(404, '登记来源不存在。')
+        events = session.scalars(select(SourceEvent).where(SourceEvent.source_id == source_id).order_by(SourceEvent.id.desc()).offset(offset).limit(limit))
+        return [{'id': e.id, 'source_id': e.source_id, 'action': e.action, 'reason': e.reason,
+                 'before': json.loads(e.before_json) if e.before_json else None,
+                 'after': json.loads(e.after_json), 'occurred_at': e.occurred_at} for e in events]
+
+    @app.patch('/api/sources/{source_id}', dependencies=[Depends(authorize)])
+    def edit_source(source_id: int, payload: SourcePatch, session: Session = Depends(db)):
+        source = session.scalar(select(Source).where(Source.id == source_id).with_for_update())
+        if source is None: raise HTTPException(404, '登记来源不存在。')
+        before = apply_source_patch(source, payload)
+        try:
+            session.flush()
+            action = 'authorization_granted' if payload.authorization_status == 'granted' else 'updated'
+            session.add(SourceEvent(source_id=source.id, action=action, reason=payload.reason,
+                                    before_json=encoded(before), after_json=encoded(source_state(source))))
+            session.commit()
+        except StaleDataError:
+            session.rollback()
+            raise HTTPException(409, '来源已被更新，请刷新后重试。')
+        session.refresh(source)
+        return source_view(source)
 
     return app
 

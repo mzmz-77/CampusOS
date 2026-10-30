@@ -1,7 +1,8 @@
 /** Browser-owned experience mode. Does not contact or impersonate any platform. */
+import {ensureRegistry,previewSourceView,updatePreviewSource,previewMessageAuthorization,type RegistryState} from './preview-sources';
 import type {RawMessage, Notice, Task, Detail} from './api';
 type PreviewNotice=Notice & {canonical:string;sourceIds:number[]};
-export interface PreviewState {messages:RawMessage[];notices:PreviewNotice[];tasks:Task[]}
+export interface PreviewState extends RegistryState {messages:RawMessage[];notices:PreviewNotice[];tasks:Task[]}
 export const initialState=():PreviewState=>({messages:[],notices:[],tasks:[]});
 class PreviewError extends Error{constructor(public status:number,message:string){super(message);}}
 const fail=(status:number,message:string):never=>{throw new PreviewError(status,message);};
@@ -23,16 +24,22 @@ function publicNotice(n:PreviewNotice):Notice{const {canonical:_canonical,source
 function detail(state:PreviewState,n:PreviewNotice):Detail{return {...publicNotice(n),sources:state.messages.filter(m=>n.sourceIds.includes(m.id)),task:state.tasks.find(t=>t.notification_id===n.id)||null};}
 export function dispatch(state:PreviewState,path:string,method:string,payload:Record<string,unknown>={}):{body:unknown;status:number}{
  const url=new URL(path,'https://preview.local'),route=url.pathname;let body:unknown;let status=200;
+ const registry=ensureRegistry(state);
  const pagination=<T,>(rows:T[])=>{const limit=Number(url.searchParams.get('limit')||100),offset=Number(url.searchParams.get('offset')||0);if(!Number.isInteger(limit)||limit<1||limit>500||!Number.isInteger(offset)||offset<0)fail(422,'分页参数无效。');return [...rows].reverse().slice(offset,offset+limit);};
- if(route==='/api/health'&&method==='GET')body={status:'ok',mode:'browser-owned-preview'};
+ if(route==='/api/sources'&&method==='GET')body=[...registry.sources].slice(Number(url.searchParams.get('offset')||0),Number(url.searchParams.get('offset')||0)+Number(url.searchParams.get('limit')||100)).map(previewSourceView);
+ else if(/^\/api\/sources\/\d+\/events$/.test(route)&&method==='GET'){const id=Number(route.split('/')[3]);if(!registry.sources.some(s=>s.id===id))return fail(404,'登记来源不存在。');body=pagination(registry.events.filter(e=>e.source_id===id));}
+ else if(/^\/api\/sources\/\d+$/.test(route)){const id=Number(route.split('/')[3]),source=registry.sources.find(s=>s.id===id);if(!source)return fail(404,'登记来源不存在。');if(method==='GET')body=previewSourceView(source);else if(method==='PATCH')body=updatePreviewSource(state,id,payload,fail);else return fail(405,'体验版不支持此操作。');}
+ else if(route==='/api/health'&&method==='GET')body={status:'ok',mode:'browser-owned-preview'};
  else if(route==='/api/messages'&&method==='GET')body=pagination(state.messages);
  else if(route==='/api/messages'&&method==='POST'){
   const source=field(payload.source,'来源',100),content=field(payload.content,'原文',50000),external=payload.external_id==null?null:field(payload.external_id,'来源编号',200),published=time(payload.published_at);
   let sourceUrl:string|null=null;
   if(payload.source_url){try{const parsed=new URL(String(payload.source_url));if(!['http:','https:'].includes(parsed.protocol))throw new Error();sourceUrl=parsed.href;}catch{fail(422,'原文链接必须为 HTTP 或 HTTPS。');}}
+  const sourceId=payload.source_id??null;
+  const snapshot=sourceId!==null?previewMessageAuthorization(state,sourceId,fail):null;
   const existing=external===null?null:state.messages.find(m=>m.source===source&&m.external_id===external);
-  if(existing){if(existing.content!==content||existing.source_url!==sourceUrl||existing.published_at!==published)fail(409,'相同来源编号的原文或元数据冲突');body=existing;}
-  else{const message:RawMessage={id:id(state.messages),source,content,external_id:external,source_url:sourceUrl,published_at:published,received_at:new Date().toISOString()};state.messages.push(message);body=message;}status=201;
+  if(existing){if(existing.content!==content||existing.source_url!==sourceUrl||existing.published_at!==published||(existing.source_id??null)!==sourceId)fail(409,'相同来源编号的原文或元数据冲突');body=existing;}
+  else{const message:RawMessage={id:id(state.messages),source,content,external_id:external,source_url:sourceUrl,published_at:published,source_id:sourceId as number|null,authorization_snapshot:snapshot,received_at:new Date().toISOString()};state.messages.push(message);body=message;}status=201;
  }
  else if(/^\/api\/messages\/\d+\/parse$/.test(route)&&method==='POST'){
   const message=state.messages.find(m=>m.id===Number(route.split('/')[3]));if(!message)return fail(404,'消息不存在');
